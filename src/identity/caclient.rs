@@ -48,12 +48,18 @@ pub trait CertificateProvider: DynClone + Send + Sync + 'static {
 dyn_clone::clone_trait_object!(CertificateProvider);
 
 impl CaClient {
-    pub fn new(address: String, trust_domain: String, root_cert: RootCert, auth: AuthSource) -> Result<CaClient, Error> {
+    pub fn new(
+        address: String,
+        trust_domain: String,
+        root_cert: RootCert,
+        auth: AuthSource,
+    ) -> Result<CaClient, Error> {
         let svc = tls::grpc_connector(address, root_cert)?;
         let client = IstioCertificateServiceClient::with_interceptor(svc, auth);
-        Ok(CaClient { client, opts: Options {
-            trust_domain,
-        } })
+        Ok(CaClient {
+            client,
+            opts: Options { trust_domain },
+        })
     }
 }
 
@@ -61,8 +67,19 @@ impl CaClient {
 impl CertificateProvider for CaClient {
     #[instrument(skip_all)]
     async fn fetch_certificate(&self, id: &Identity) -> Result<tls::Certs, Error> {
+        let new_id: Identity = match id {
+            Identity::Spiffe {
+                trust_domain: _,
+                namespace,
+                service_account,
+            } => Identity::Spiffe {
+                trust_domain: self.opts.trust_domain.to_owned(),
+                namespace: namespace.to_owned(),
+                service_account: service_account.to_owned(),
+            },
+        };
         let cs = tls::CsrOptions {
-            san: id.to_string(),
+            san: new_id.to_string(),
         }
         .generate()?;
         let csr: Vec<u8> = cs.csr;
@@ -76,7 +93,7 @@ impl CertificateProvider for CaClient {
                 fields: BTreeMap::from([(
                     "ImpersonatedIdentity".into(),
                     prost_types::Value {
-                        kind: Some(Kind::StringValue(id.to_string())),
+                        kind: Some(Kind::StringValue(new_id.to_string())),
                     },
                 )]),
             }),
@@ -90,18 +107,18 @@ impl CertificateProvider for CaClient {
         let leaf = resp
             .cert_chain
             .first()
-            .ok_or_else(|| Error::EmptyResponse(id.to_owned()))?
+            .ok_or_else(|| Error::EmptyResponse(new_id.to_owned()))?
             .as_bytes();
         let chain = if resp.cert_chain.len() > 1 {
             resp.cert_chain[1..].iter().map(|s| s.as_bytes()).collect()
         } else {
-            warn!("no chain certs for: {}", id);
+            warn!("no chain certs for: {}", new_id);
             vec![]
         };
         let certs = tls::cert_from(&pkey, leaf, chain);
         certs
-            .verify_san(id)
-            .map_err(|_| Error::SanError(id.to_owned()))?;
+            .verify_san(&new_id)
+            .map_err(|_| Error::SanError(new_id.to_owned()))?;
         Ok(certs)
     }
 }
@@ -213,16 +230,21 @@ mod tests {
 
     async fn test_ca_client_with_response(
         res: IstioCertificateResponse,
+        trust_domain: String,
     ) -> Result<tls::Certs, Error> {
-        let (mock, ca_client) = test_helpers::ca::CaServer::spawn().await;
+        let (mock, mut ca_client) = test_helpers::ca::CaServer::spawn().await;
+        ca_client.opts.trust_domain = trust_domain.to_string();
         mock.send(Ok(res)).unwrap();
         ca_client.fetch_certificate(&Identity::default()).await
     }
 
     #[tokio::test]
     async fn empty_chain() {
-        let res =
-            test_ca_client_with_response(IstioCertificateResponse { cert_chain: vec![] }).await;
+        let res = test_ca_client_with_response(
+            IstioCertificateResponse { cert_chain: vec![] },
+            "".to_string(),
+        )
+        .await;
         assert_matches!(res, Err(Error::EmptyResponse(_)));
     }
 
@@ -236,23 +258,40 @@ mod tests {
         let certs =
             tls::generate_test_certs(&id.into(), Duration::from_secs(0), Duration::from_secs(0));
 
-        let res = test_ca_client_with_response(IstioCertificateResponse {
-            cert_chain: vec![String::from_utf8(certs.x509().to_pem().unwrap()).unwrap()],
-        })
+        let res = test_ca_client_with_response(
+            IstioCertificateResponse {
+                cert_chain: vec![String::from_utf8(certs.x509().to_pem().unwrap()).unwrap()],
+            },
+            "cluster.local".to_string(),
+        )
         .await;
         assert_matches!(res, Err(Error::SanError(_)));
     }
 
     #[tokio::test]
     async fn fetch_certificate() {
+        let new_id: Identity = match &Identity::default() {
+            Identity::Spiffe {
+                trust_domain: _,
+                namespace,
+                service_account,
+            } => Identity::Spiffe {
+                trust_domain: "test.trust.domain".to_string(),
+                namespace: namespace.to_owned(),
+                service_account: service_account.to_owned(),
+            },
+        };
         let certs = tls::generate_test_certs(
-            &Identity::default().into(),
+            &new_id.into(),
             Duration::from_secs(0),
             Duration::from_secs(0),
         );
-        let res = test_ca_client_with_response(IstioCertificateResponse {
-            cert_chain: vec![String::from_utf8(certs.x509().to_pem().unwrap()).unwrap()],
-        })
+        let res = test_ca_client_with_response(
+            IstioCertificateResponse {
+                cert_chain: vec![String::from_utf8(certs.x509().to_pem().unwrap()).unwrap()],
+            },
+            "test.trust.domain".to_string(),
+        )
         .await;
         assert_matches!(res, Ok(_));
     }

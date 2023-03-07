@@ -486,7 +486,12 @@ impl<T: CertificateProvider + Clone> CertificateProvider for SecretManager<T> {
 
 impl SecretManager<CaClient> {
     pub fn new(cfg: crate::config::Config) -> Result<Self, Error> {
-        let caclient = CaClient::new(cfg.ca_address.unwrap(), cfg.trust_domain, cfg.ca_root_cert, cfg.auth)?;
+        let caclient = CaClient::new(
+            cfg.ca_address.unwrap(),
+            cfg.trust_domain.unwrap_or_default(),
+            cfg.ca_root_cert,
+            cfg.auth,
+        )?;
         Ok(Self::new_with_client(caclient))
     }
 }

@@ -21,7 +21,6 @@ use std::{env, fs};
 
 use anyhow::anyhow;
 use bytes::Bytes;
-use itertools::Itertools;
 use tokio::time;
 
 use crate::identity;
@@ -90,7 +89,7 @@ pub struct Config {
     pub local_ip: Option<IpAddr>,
 
     /// The trust domain corresponds to the trust root of a system.
-    pub trust_domain: String,
+    pub trust_domain: Option<String>,
 
     /// CA address to use. If fake_ca is set, this will be None.
     /// Note: we do not implicitly use None when set to "" since using the fake_ca is not secure.
@@ -186,9 +185,7 @@ pub fn construct_config(pc: ProxyConfig) -> Result<Config, Error> {
             .or(pc.discovery_address)
             .or_else(|| Some(default_istiod_address.clone())),
     );
-    let trust_domain = parse(TRUST_DOMAIN)?
-        .or(pc.trust_domain)
-        .unwrap_or_else(|| "cluster.local".to_string());
+    let trust_domain = Some(parse_default(TRUST_DOMAIN, "cluster.local".to_string())?);
 
     let fake_ca = parse_default(FAKE_CA, false)?;
     let ca_address = empty_to_none(if fake_ca {
@@ -302,7 +299,7 @@ fn construct_proxy_config(mc_path: &str, pc_env: Option<&str>) -> anyhow::Result
             }
         }
     }
-        .map_err(|e| anyhow!("failed parsing mesh config file {}: {}", mc_path, e))?;
+    .map_err(|e| anyhow!("failed parsing mesh config file {}: {}", mc_path, e))?;
 
     let proxy_config_env = pc_env
         .map(|pc_env| {
