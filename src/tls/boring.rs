@@ -383,6 +383,7 @@ pub fn extract_sans(cert: &x509::X509) -> Vec<Identity> {
 impl SanChecker for x509::X509 {
     fn verify_san(&self, identity: &Identity) -> Result<(), TlsError> {
         let sans = extract_sans(self);
+
         sans.iter()
             .find(|id| id == &identity)
             .ok_or_else(|| TlsError::SanError(identity.to_owned(), sans.clone()))

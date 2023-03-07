@@ -21,6 +21,7 @@ use std::{env, fs};
 
 use anyhow::anyhow;
 use bytes::Bytes;
+use itertools::Itertools;
 use tokio::time;
 
 use crate::identity;
@@ -37,6 +38,7 @@ const FAKE_CA: &str = "FAKE_CA";
 const ZTUNNEL_WORKER_THREADS: &str = "ZTUNNEL_WORKER_THREADS";
 const ENABLE_ORIG_SRC: &str = "ENABLE_ORIG_SRC";
 const PROXY_CONFIG: &str = "PROXY_CONFIG";
+const TRUST_DOMAIN: &str = "TRUST_DOMAIN";
 
 const DEFAULT_WORKER_THREADS: u16 = 2;
 const DEFAULT_ADMIN_PORT: u16 = 15000;
@@ -86,6 +88,9 @@ pub struct Config {
     pub local_node: Option<String>,
     /// The local_ip we are running at.
     pub local_ip: Option<IpAddr>,
+
+    /// The trust domain corresponds to the trust root of a system.
+    pub trust_domain: String,
 
     /// CA address to use. If fake_ca is set, this will be None.
     /// Note: we do not implicitly use None when set to "" since using the fake_ca is not secure.
@@ -181,6 +186,9 @@ pub fn construct_config(pc: ProxyConfig) -> Result<Config, Error> {
             .or(pc.discovery_address)
             .or_else(|| Some(default_istiod_address.clone())),
     );
+    let trust_domain = parse(TRUST_DOMAIN)?
+        .or(pc.trust_domain)
+        .unwrap_or_else(|| "cluster.local".to_string());
 
     let fake_ca = parse_default(FAKE_CA, false)?;
     let ca_address = empty_to_none(if fake_ca {
@@ -231,6 +239,8 @@ pub fn construct_config(pc: ProxyConfig) -> Result<Config, Error> {
         local_xds_config: parse::<PathBuf>(LOCAL_XDS_PATH)?.map(ConfigSource::File),
         xds_on_demand: parse_default(XDS_ON_DEMAND, false)?,
         proxy_metadata: pc.proxy_metadata,
+
+        trust_domain,
 
         fake_ca,
         auth: identity::AuthSource::Token(PathBuf::from(r"./var/run/secrets/tokens/istio-token")),
@@ -292,7 +302,7 @@ fn construct_proxy_config(mc_path: &str, pc_env: Option<&str>) -> anyhow::Result
             }
         }
     }
-    .map_err(|e| anyhow!("failed parsing mesh config file {}: {}", mc_path, e))?;
+        .map_err(|e| anyhow!("failed parsing mesh config file {}: {}", mc_path, e))?;
 
     let proxy_config_env = pc_env
         .map(|pc_env| {

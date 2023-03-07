@@ -73,6 +73,7 @@ impl CaServer {
         });
         let client = CaClient::new(
             "https://".to_string() + &server_addr.to_string(),
+            "cluster.local".to_string(),
             root_cert,
             AuthSource::Token(PathBuf::from(r"src/test_helpers/fake-jwt")),
         )

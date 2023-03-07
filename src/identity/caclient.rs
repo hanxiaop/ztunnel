@@ -32,6 +32,12 @@ use crate::xds::istio::ca::IstioCertificateRequest;
 #[derive(Clone)]
 pub struct CaClient {
     pub client: IstioCertificateServiceClient<InterceptedService<TlsGrpcChannel, AuthSource>>,
+    pub opts: Options,
+}
+
+#[derive(Clone)]
+pub struct Options {
+    pub trust_domain: String,
 }
 
 #[async_trait]
@@ -42,10 +48,12 @@ pub trait CertificateProvider: DynClone + Send + Sync + 'static {
 dyn_clone::clone_trait_object!(CertificateProvider);
 
 impl CaClient {
-    pub fn new(address: String, root_cert: RootCert, auth: AuthSource) -> Result<CaClient, Error> {
+    pub fn new(address: String, trust_domain: String, root_cert: RootCert, auth: AuthSource) -> Result<CaClient, Error> {
         let svc = tls::grpc_connector(address, root_cert)?;
         let client = IstioCertificateServiceClient::with_interceptor(svc, auth);
-        Ok(CaClient { client })
+        Ok(CaClient { client, opts: Options {
+            trust_domain,
+        } })
     }
 }
 
