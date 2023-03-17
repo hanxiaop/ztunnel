@@ -12,26 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::num::flt2dec::decode;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use std::{net::SocketAddr, time::Duration};
+use std::thread::current;
 
 use boring::asn1::Asn1TimeRef;
 use boring::x509::X509;
 use drain::Watch;
+use futures::future::err;
 #[cfg(feature = "gperftools")]
 use gperftools::heap_profiler::HEAP_PROFILER;
 #[cfg(feature = "gperftools")]
 use gperftools::profiler::PROFILER;
 use hyper::{Body, Request, Response};
+use log::log;
 use pprof::protos::Message;
 #[cfg(feature = "gperftools")]
 use tokio::fs::File;
 #[cfg(feature = "gperftools")]
 use tokio::io::AsyncReadExt;
 use tracing::error;
+
+use actix_web::{get, web, App, HttpResponse, HttpServer, Result};
+use tera::{Context, Tera};
 
 use crate::config::Config;
 use crate::hyper_util::{empty_response, plaintext_response, Server};
@@ -41,6 +48,8 @@ use crate::version::BuildInfo;
 use crate::workload::LocalConfig;
 use crate::workload::WorkloadInformation;
 use crate::{signal, telemetry};
+use crate::app::build;
+use crate::signal::Shutdown;
 
 struct State {
     workload_info: WorkloadInformation,
@@ -101,7 +110,7 @@ impl Service {
                 cert_manager,
             },
         )
-        .map(|s| Service { s })
+            .map(|s| Service { s })
     }
 
     pub fn address(&self) -> SocketAddr {
@@ -127,12 +136,56 @@ impl Service {
                     },
                     req,
                 )
-                .await),
+                    .await),
                 "/logging" => Ok(handle_logging(req).await),
+                "/" => Ok(handle_dashboard(req).await),
                 _ => Ok(empty_response(hyper::StatusCode::NOT_FOUND)),
             }
         })
     }
+}
+
+#[derive(serde::Serialize)]
+struct Api {
+    name: String,
+    endpoint: String,
+}
+
+async fn handle_dashboard(_req: HttpRequest) -> Result<HttpResponse, E> {
+    let apis = vec![
+        Api {
+            name: "Pprof Profile".to_string(),
+            endpoint: "/debug/pprof/profile".to_string(),
+        },
+        Api {
+            name: "Gprof Profile".to_string(),
+            endpoint: "/debug/gprof/profile".to_string(),
+        },
+        Api {
+            name: "Gprof Heap".to_string(),
+            endpoint: "/debug/gprof/heap".to_string(),
+        },
+        Api {
+            name: "Server Shutdown".to_string(),
+            endpoint: "/quitquitquit".to_string(),
+        },
+        Api {
+            name: "Config Dump".to_string(),
+            endpoint: "/config_dump".to_string(),
+        },
+        Api {
+            name: "Logging".to_string(),
+            endpoint: "/logging".to_string(),
+        },
+    ];
+
+    let mut context = tera::Context::new();
+    context.insert("apis", &apis);
+
+    let tera = Tera::new("asserts/templates/*").unwrap();
+    let rendered = tera.render("asserts/dashboard.html", &context)?;
+
+    Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }
 
 fn x509_to_pem(x509: &X509) -> String {
@@ -257,6 +310,7 @@ usage: POST /logging?level={mod1}:{level1},{mod2}:{level2}\t(To change specific 
 hint: loglevel:\terror|warn|info|debug|trace|off
 hint: mod_name:\tthe module name, i.e. ztunnel::proxy
 ";
+
 async fn handle_logging(req: Request<Body>) -> Response<Body> {
     match *req.method() {
         hyper::Method::POST => {
@@ -302,7 +356,7 @@ fn change_log_level(reset: bool, level: &str) -> Response<Body> {
         Ok(_) => list_loggers(),
         Err(e) => plaintext_response(
             hyper::StatusCode::METHOD_NOT_ALLOWED,
-            format!("failed to set new level: {e}\n{HELP_STRING}",),
+            format!("failed to set new level: {e}\n{HELP_STRING}", ),
         ),
     }
 }
@@ -368,6 +422,7 @@ async fn handle_gprof_heap(_req: Request<Body>) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+    use std::{format, writeln};
 
     use crate::identity;
 
@@ -385,7 +440,7 @@ mod tests {
                 Right(r) => writeln!(ret, " + {r}"),
                 Both(s, _) => writeln!(ret, "{s}"),
             }
-            .unwrap();
+                .unwrap();
         }
         ret
     }
